@@ -25,6 +25,8 @@ def detect_category(rel_path: str) -> str:
         return 'news'
     elif rel_path.startswith('people'):
         return 'people'
+    elif rel_path.startswith('docs'):
+        return 'docs'
     else:
         return 'main'
 

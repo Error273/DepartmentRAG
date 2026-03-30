@@ -14,5 +14,10 @@ rank-bm25
 fastapi
 uvicorn[standard]
 
+# Document parsing (Word / PDF)
+python-docx
+pdfplumber
+olefile
+
 # Telegram Bot
 aiogram>=3.0
