@@ -195,43 +195,28 @@ async def handle_question(message: Message):
     try:
         pipeline = get_pipeline()
 
-        # 1. Поиск документов (синхронный → executor)
-        docs = await asyncio.get_event_loop().run_in_executor(
-            None,
-            lambda: pipeline.retriever.search(query=question, top_k=5),
-        )
-
-        if not docs:
-            await status_msg.edit_text(
-                "😔 К сожалению, я не нашёл релевантной информации "
-                "по вашему вопросу.\n\n"
-                "Попробуйте переформулировать вопрос или задать другой."
-            )
-            return
-
-        # 2. Формируем контекст
-        context_text = pipeline.retriever.format_context(docs)
-
-        # 3. Получаем историю диалога для этого чата
+        # Получаем историю диалога для этого чата
         history = list(_chat_history[chat_id])
 
-        # 4. Генерируем ответ LLM с историей (синхронный → executor)
-        await status_msg.edit_text("💬 Генерирую ответ...")
+        # RAG-агент: сам решает что и как искать
+        await status_msg.edit_text("🤖 Анализирую вопрос и ищу информацию...")
 
-        answer = await asyncio.get_event_loop().run_in_executor(
+        response = await asyncio.get_event_loop().run_in_executor(
             None,
-            lambda: pipeline.llm.ask(
+            lambda: pipeline.ask(
                 question=question,
-                context=context_text,
                 history=history,
             ),
         )
 
-        # 5. Сохраняем в память диалога
+        answer = response.answer
+        docs = response.sources
+
+        # Сохраняем в память диалога
         _chat_history[chat_id].append({"role": "user", "content": question})
         _chat_history[chat_id].append({"role": "assistant", "content": answer})
 
-        # 6. Формируем финальное сообщение (MD → HTML)
+        # Формируем финальное сообщение (MD → HTML)
         sources_text = format_sources(docs)
         final_text = md_to_html(answer) + sources_text
 
