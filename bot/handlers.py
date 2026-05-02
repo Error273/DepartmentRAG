@@ -211,6 +211,50 @@ async def cmd_clear(message: Message):
     )
 
 
+# ── Отправка логов инструментов ───────────────────────────────────────
+
+async def send_tool_logs(message: Message, response) -> None:
+    """
+    Отправляет логи вызовов инструментов отдельным сообщением.
+
+    Вынесена в отдельную функцию для переиспользования.
+    Вызовите из хэндлера, передав исходное сообщение пользователя
+    и объект ответа RAGPipeline.
+    """
+    tool_logs = getattr(response, 'tool_logs', None)
+    if not tool_logs:
+        return
+
+    logs_text = format_tool_logs(
+        tool_logs,
+        elapsed_seconds=getattr(response, 'elapsed_seconds', 0.0),
+        total_tokens=getattr(response, 'total_tokens', 0),
+    )
+    if not logs_text:
+        return
+
+    try:
+        await message.answer(
+            logs_text,
+            parse_mode=ParseMode.HTML,
+            disable_web_page_preview=True,
+        )
+    except Exception:
+        # Фоллбэк без HTML
+        plain_logs = "🔧 Логи работы агента:\n\n"
+        for j, lg in enumerate(tool_logs, 1):
+            plain_logs += f"Шаг {j}: {lg.tool_name}\n"
+            for k, v in lg.arguments.items():
+                plain_logs += f"  {k}: {v}\n"
+            if lg.result:
+                plain_logs += f"  Результат: {lg.result[:200]}\n"
+            plain_logs += "\n"
+        await message.answer(
+            plain_logs,
+            disable_web_page_preview=True,
+        )
+
+
 # ── Обработка вопросов (основная логика) ─────────────────────────────
 
 @router.message(F.text)
@@ -218,7 +262,7 @@ async def handle_question(message: Message):
     """
     Обработка текстовых сообщений — основной RAG-цикл с памятью.
 
-    1. Показывает «ищу информацию...»
+    1. Показывает статус «печатает...»
     2. Находит релевантные документы
     3. Генерирует ответ LLM с учётом истории диалога
     4. Сохраняет вопрос и ответ в память
@@ -231,17 +275,14 @@ async def handle_question(message: Message):
         await message.answer("❓ Пожалуйста, задайте вопрос.")
         return
 
-    # Placeholder-сообщение
-    status_msg = await message.answer("🔍 Ищу информацию...")
-
     try:
         pipeline = get_pipeline()
 
         # Получаем историю диалога для этого чата
         history = list(_chat_history[chat_id])
 
-        # RAG-агент: сам решает что и как искать
-        await status_msg.edit_text("🤖 Анализирую вопрос и ищу информацию...")
+        # Показываем статус «печатает» пока агент работает
+        await message.bot.send_chat_action(chat_id, "typing")
 
         response = await asyncio.get_event_loop().run_in_executor(
             None,
@@ -256,7 +297,7 @@ async def handle_question(message: Message):
 
         # Если запрос заблокирован guardrail-ом — отправляем отказ
         if response.blocked:
-            await status_msg.edit_text(
+            await message.answer(
                 f"🛡️ {answer}",
                 parse_mode=ParseMode.HTML,
             )
@@ -267,65 +308,25 @@ async def handle_question(message: Message):
         _chat_history[chat_id].append({"role": "assistant", "content": answer})
 
         # Формируем финальное сообщение (MD → HTML)
-        sources_text = format_sources(docs)
-        final_text = md_to_html(answer) + sources_text
+        final_text = md_to_html(answer)
 
         try:
-            await status_msg.edit_text(
+            await message.answer(
                 final_text,
                 parse_mode=ParseMode.HTML,
                 disable_web_page_preview=True,
             )
         except Exception:
             # Фоллбэк без HTML, если парсинг сломался
-            plain_sources = "\n\n📚 Источники:\n"
-            seen = set()
-            for doc in docs:
-                if doc.source_url not in seen:
-                    seen.add(doc.source_url)
-                    plain_sources += f"  • {doc.title}: {doc.source_url}\n"
-            await status_msg.edit_text(
-                answer + plain_sources,
+            await message.answer(
+                answer,
                 disable_web_page_preview=True,
             )
 
-        # Отправляем логи инструментов отдельным сообщением
-        tool_logs = getattr(response, 'tool_logs', None)
-        if tool_logs:
-            logs_text = format_tool_logs(
-                tool_logs,
-                elapsed_seconds=getattr(response, 'elapsed_seconds', 0.0),
-                total_tokens=getattr(response, 'total_tokens', 0),
-            )
-            if logs_text:
-                try:
-                    await message.answer(
-                        logs_text,
-                        parse_mode=ParseMode.HTML,
-                        disable_web_page_preview=True,
-                    )
-                except Exception:
-                    # Фоллбэк без HTML
-                    plain_logs = "🔧 Логи работы агента:\n\n"
-                    for j, lg in enumerate(tool_logs, 1):
-                        plain_logs += f"Шаг {j}: {lg.tool_name}\n"
-                        for k, v in lg.arguments.items():
-                            plain_logs += f"  {k}: {v}\n"
-                        if lg.result:
-                            plain_logs += f"  Результат: {lg.result[:200]}\n"
-                        plain_logs += "\n"
-                    await message.answer(
-                        plain_logs,
-                        disable_web_page_preview=True,
-                    )
-
     except Exception as e:
         traceback.print_exc()
-        try:
-            await status_msg.edit_text(
-                f"⚠️ Произошла ошибка при обработке вашего вопроса.\n\n"
-                f"Детали: {e}\n\n"
-                f"Попробуйте ещё раз через несколько секунд."
-            )
-        except Exception:
-            await message.answer(f"⚠️ Ошибка: {e}")
+        await message.answer(
+            f"⚠️ Произошла ошибка при обработке вашего вопроса.\n\n"
+            f"Детали: {e}\n\n"
+            f"Попробуйте ещё раз через несколько секунд."
+        )
