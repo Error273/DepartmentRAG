@@ -1,5 +1,3 @@
-# RAG-система кафедры аэрогидромеханики КФУ
-
 # Core
 openai>=1.0
 python-dotenv

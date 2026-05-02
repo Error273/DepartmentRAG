@@ -54,7 +54,6 @@ async def ask(request: AskRequest):
             SourceDocument(
                 title=doc.title,
                 source_url=doc.source_url,
-                category=doc.category,
                 score=round(doc.score, 4),
                 match_type=doc.match_type,
             )
@@ -89,7 +88,6 @@ async def ask_stream(request: AskRequest):
             docs = pipeline.retriever.search(
                 query=request.question,
                 top_k=request.top_k,
-                category=request.category,
             )
 
             # 2. Отправляем источники первым SSE-событием
@@ -97,7 +95,6 @@ async def ask_stream(request: AskRequest):
                 {
                     "title": doc.title,
                     "source_url": doc.source_url,
-                    "category": doc.category,
                     "score": round(doc.score, 4),
                     "match_type": doc.match_type,
                 }

@@ -109,6 +109,48 @@ def format_sources(sources) -> str:
     return "\n".join(lines)
 
 
+def format_tool_logs(tool_logs, elapsed_seconds: float = 0.0, total_tokens: int = 0) -> str:
+    """Форматирует логи вызовов инструментов в читаемый текст."""
+    if not tool_logs:
+        return ""
+
+    lines = ["🔧 <b>Логи работы агента:</b>\n"]
+
+    # Метрики производительности
+    metrics = []
+    if elapsed_seconds > 0:
+        metrics.append(f"⏱ Время: <code>{elapsed_seconds:.1f}с</code>")
+    if total_tokens > 0:
+        metrics.append(f"🔤 Токены: <code>{total_tokens}</code>")
+    if metrics:
+        lines.append(" | ".join(metrics))
+        lines.append("")
+
+    for i, log in enumerate(tool_logs, 1):
+        lines.append(f"<b>Шаг {i}:</b> 🛠 <code>{log.tool_name}</code>")
+
+        # Аргументы
+        args_parts = []
+        for key, value in log.arguments.items():
+            args_parts.append(f"  • <i>{key}</i>: <code>{value}</code>")
+        if args_parts:
+            lines.append("\n".join(args_parts))
+
+        # Результат (превью)
+        if log.result:
+            # Обрезаем для читаемости в Telegram
+            result_preview = log.result[:300]
+            if len(log.result) > 300:
+                result_preview += "..."
+            lines.append(f"  ➡️ Результат: <pre>{result_preview}</pre>")
+        else:
+            lines.append(f"  ➡️ Результат: <i>нет данных</i>")
+
+        lines.append("")  # пустая строка между шагами
+
+    return "\n".join(lines)
+
+
 # ── /start ───────────────────────────────────────────────────────────
 
 START_TEXT = (
@@ -238,6 +280,36 @@ async def handle_question(message: Message):
                 answer + plain_sources,
                 disable_web_page_preview=True,
             )
+
+        # Отправляем логи инструментов отдельным сообщением
+        tool_logs = getattr(response, 'tool_logs', None)
+        if tool_logs:
+            logs_text = format_tool_logs(
+                tool_logs,
+                elapsed_seconds=getattr(response, 'elapsed_seconds', 0.0),
+                total_tokens=getattr(response, 'total_tokens', 0),
+            )
+            if logs_text:
+                try:
+                    await message.answer(
+                        logs_text,
+                        parse_mode=ParseMode.HTML,
+                        disable_web_page_preview=True,
+                    )
+                except Exception:
+                    # Фоллбэк без HTML
+                    plain_logs = "🔧 Логи работы агента:\n\n"
+                    for j, lg in enumerate(tool_logs, 1):
+                        plain_logs += f"Шаг {j}: {lg.tool_name}\n"
+                        for k, v in lg.arguments.items():
+                            plain_logs += f"  {k}: {v}\n"
+                        if lg.result:
+                            plain_logs += f"  Результат: {lg.result[:200]}\n"
+                        plain_logs += "\n"
+                    await message.answer(
+                        plain_logs,
+                        disable_web_page_preview=True,
+                    )
 
     except Exception as e:
         traceback.print_exc()

@@ -7,7 +7,7 @@ Pipeline: обратно-совместимая обёртка над RAG-аге
 
 from dataclasses import dataclass
 
-from rag.agent import RAGAgent, AgentResponse
+from rag.agent import RAGAgent, AgentResponse, ToolCallLog
 from rag.retriever import RetrievedDocument
 
 
@@ -17,6 +17,9 @@ class RAGResponse:
     answer: str                          # Ответ LLM
     sources: list[RetrievedDocument]     # Найденные документы
     query: str                           # Исходный вопрос
+    tool_logs: list[ToolCallLog] = None  # Логи вызовов инструментов
+    elapsed_seconds: float = 0.0         # Время ответа в секундах
+    total_tokens: int = 0                # Общее количество токенов
 
 
 class RAGPipeline:
@@ -43,7 +46,6 @@ class RAGPipeline:
         self,
         question: str,
         top_k: int = 5,
-        category: str | None = None,
         history: list[dict] | None = None,
     ) -> RAGResponse:
         """
@@ -52,7 +54,6 @@ class RAGPipeline:
         Args:
             question: Вопрос пользователя.
             top_k: Не используется напрямую (агент сам управляет поиском).
-            category: Не используется напрямую (агент сам управляет поиском).
             history: История диалога [{\"role\": ..., \"content\": ...}].
 
         Returns:
@@ -67,4 +68,7 @@ class RAGPipeline:
             answer=agent_response.answer,
             sources=agent_response.sources,
             query=agent_response.query,
+            tool_logs=agent_response.tool_logs,
+            elapsed_seconds=agent_response.elapsed_seconds,
+            total_tokens=agent_response.total_tokens,
         )
