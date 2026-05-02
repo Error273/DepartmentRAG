@@ -254,7 +254,15 @@ async def handle_question(message: Message):
         answer = response.answer
         docs = response.sources
 
-        # Сохраняем в память диалога
+        # Если запрос заблокирован guardrail-ом — отправляем отказ
+        if response.blocked:
+            await status_msg.edit_text(
+                f"🛡️ {answer}",
+                parse_mode=ParseMode.HTML,
+            )
+            return
+
+        # Сохраняем в память диалога (только разрешённые сообщения)
         _chat_history[chat_id].append({"role": "user", "content": question})
         _chat_history[chat_id].append({"role": "assistant", "content": answer})
 

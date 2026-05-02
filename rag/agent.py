@@ -104,6 +104,7 @@ class AgentResponse:
     tool_logs: list[ToolCallLog] = field(default_factory=list)  # логи вызовов инструментов
     elapsed_seconds: float = 0.0  # время ответа в секундах
     total_tokens: int = 0  # общее количество токенов (input + output)
+    blocked: bool = False  # заблокировано guardrail-ом
 
 
 # ── RAG Agent ────────────────────────────────────────────────────────

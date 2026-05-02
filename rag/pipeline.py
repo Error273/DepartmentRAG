@@ -3,12 +3,17 @@ Pipeline: обратно-совместимая обёртка над RAG-аге
 
 Сохраняет тот же интерфейс (ask/ask_stream), но делегирует
 всю работу в RAGAgent (LangGraph ReAct).
+
+Включает Guardrail — проверку входящих сообщений
+перед вызовом основного агента.
 """
 
 from dataclasses import dataclass
 
 from rag.agent import RAGAgent, AgentResponse, ToolCallLog
+from rag.guardrail import Guardrail
 from rag.retriever import RetrievedDocument
+from rag.config import GUARDRAIL_BLOCK_MESSAGE
 
 
 @dataclass
@@ -20,6 +25,7 @@ class RAGResponse:
     tool_logs: list[ToolCallLog] = None  # Логи вызовов инструментов
     elapsed_seconds: float = 0.0         # Время ответа в секундах
     total_tokens: int = 0                # Общее количество токенов
+    blocked: bool = False                # Заблокировано guardrail-ом
 
 
 class RAGPipeline:
@@ -28,6 +34,9 @@ class RAGPipeline:
 
     Обратно-совместимая обёртка: тот же интерфейс .ask(),
     но внутри LLM сама решает когда и что искать.
+
+    Включает Guardrail: перед вызовом агента быстрая модель
+    проверяет, допустимо ли обрабатывать запрос.
 
     Использование:
         pipeline = RAGPipeline()
@@ -39,6 +48,7 @@ class RAGPipeline:
 
     def __init__(self):
         print("Инициализация RAG Pipeline (агентный режим)...")
+        self.guardrail = Guardrail()
         self.agent = RAGAgent()
         print("RAG Pipeline готов к работе!")
 
@@ -49,16 +59,29 @@ class RAGPipeline:
         history: list[dict] | None = None,
     ) -> RAGResponse:
         """
-        Полный цикл RAG через агента.
+        Полный цикл RAG через агента с guardrail-проверкой.
 
         Args:
             question: Вопрос пользователя.
             top_k: Не используется напрямую (агент сам управляет поиском).
-            history: История диалога [{\"role\": ..., \"content\": ...}].
+            history: История диалога [{"role": ..., "content": ...}].
 
         Returns:
             RAGResponse с ответом, источниками и исходным запросом.
         """
+        # 1. Guardrail: проверяем допустимость запроса
+        guard_result = self.guardrail.check(question, history)
+        if not guard_result.allowed:
+            print(f"[Guardrail] Заблокировано: {question!r} → {guard_result.reason}")
+            return RAGResponse(
+                answer=GUARDRAIL_BLOCK_MESSAGE,
+                sources=[],
+                query=question,
+                tool_logs=[],
+                blocked=True,
+            )
+
+        # 2. Основной RAG-агент
         agent_response: AgentResponse = self.agent.ask(
             question=question,
             history=history,
@@ -71,4 +94,5 @@ class RAGPipeline:
             tool_logs=agent_response.tool_logs,
             elapsed_seconds=agent_response.elapsed_seconds,
             total_tokens=agent_response.total_tokens,
+            blocked=False,
         )
