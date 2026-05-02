@@ -39,24 +39,21 @@ def get_pipeline() -> RAGPipeline:
 @router.post(
     "/ask",
     response_model=AskResponse,
-    summary="Задать вопрос RAG-системе",
-    description="Принимает вопрос, ищет релевантные документы, генерирует ответ через LLM.",
+    summary="Задать вопрос RAG-агенту",
+    description="Принимает вопрос, агент самостоятельно ищет документы и генерирует ответ.",
 )
 async def ask(request: AskRequest):
-    """Основной эндпоинт: вопрос → поиск → LLM → ответ."""
+    """Основной эндпоинт: вопрос → агент (поиск + LLM) → ответ."""
     try:
         pipeline = get_pipeline()
         response = pipeline.ask(
             question=request.question,
-            top_k=request.top_k,
-            category=request.category,
         )
 
         sources = [
             SourceDocument(
                 title=doc.title,
                 source_url=doc.source_url,
-                category=doc.category,
                 score=round(doc.score, 4),
                 match_type=doc.match_type,
             )
@@ -91,7 +88,6 @@ async def ask_stream(request: AskRequest):
             docs = pipeline.retriever.search(
                 query=request.question,
                 top_k=request.top_k,
-                category=request.category,
             )
 
             # 2. Отправляем источники первым SSE-событием
@@ -99,7 +95,6 @@ async def ask_stream(request: AskRequest):
                 {
                     "title": doc.title,
                     "source_url": doc.source_url,
-                    "category": doc.category,
                     "score": round(doc.score, 4),
                     "match_type": doc.match_type,
                 }

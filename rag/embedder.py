@@ -1,6 +1,5 @@
 """
 Embedder: обёртка над sentence-transformers для получения эмбеддингов текста.
-Работает на CPU, использует мультиязычную MiniLM модель.
 """
 
 from sentence_transformers import SentenceTransformer

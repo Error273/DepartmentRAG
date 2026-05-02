@@ -2,7 +2,6 @@
 LLM: обёртка над OpenRouter API для генерации ответов.
 
 Использует openai-совместимый API OpenRouter.
-Модель по умолчанию: stepfun/step-3.5-flash:free (бесплатная, быстрая).
 Включает автоматический ретрай при rate-limit (429).
 """
 
@@ -11,8 +10,9 @@ import time
 from openai import OpenAI, RateLimitError
 
 from rag.config import (
-    OPENROUTER_API_KEY,
-    OPENROUTER_BASE_URL,
+    YANDEX_CLOUD_API_KEY,
+    YANDEX_CLOUD_FOLDER,
+    BASE_URL,
     LLM_MODEL,
     LLM_TEMPERATURE,
     LLM_MAX_TOKENS,
@@ -39,9 +39,9 @@ class LLM:
 
     def __init__(
         self,
-        model: str = LLM_MODEL,
+        model=f"gpt://{YANDEX_CLOUD_FOLDER}/{LLM_MODEL}",
         api_key: str | None = None,
-        base_url: str = OPENROUTER_BASE_URL,
+        base_url: str = BASE_URL,
         temperature: float = LLM_TEMPERATURE,
         max_tokens: int = LLM_MAX_TOKENS,
         system_prompt: str = SYSTEM_PROMPT,
@@ -51,16 +51,19 @@ class LLM:
         self.max_tokens = max_tokens
         self.system_prompt = system_prompt
 
-        key = api_key or OPENROUTER_API_KEY
+        key = api_key or YANDEX_CLOUD_API_KEY
         if not key:
             raise ValueError(
-                "OPENROUTER_API_KEY не задан! "
+                "API_KEY не задан! "
                 "Укажите его в .env файле или передайте в конструктор."
             )
 
         self.client = OpenAI(
-            api_key=key,
+            api_key="unused",
             base_url=base_url,
+            default_headers={
+                "Authorization": f"Api-Key {key}",
+            },
         )
         print(f"LLM инициализирован: {self.model}")
 
@@ -119,6 +122,7 @@ class LLM:
                     messages=messages,
                     temperature=self.temperature,
                     max_tokens=self.max_tokens,
+                    extra_body={"reasoning_effort": "none"},
                 )
                 return response.choices[0].message.content.strip()
 
@@ -161,6 +165,7 @@ class LLM:
                     temperature=self.temperature,
                     max_tokens=self.max_tokens,
                     stream=True,
+                    extra_body={"reasoning_effort": "none"},
                 )
 
                 for chunk in stream:

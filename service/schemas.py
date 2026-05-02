@@ -2,14 +2,10 @@
 Pydantic-модели запросов и ответов для FastAPI сервиса.
 """
 
-from typing import Literal
-
-from pydantic import BaseModel, Field, field_validator
+from pydantic import BaseModel, Field
 
 
 # ── Запросы ──────────────────────────────────────────────────────────
-
-VALID_CATEGORIES = {"main", "news", "people"}
 
 class AskRequest(BaseModel):
     """Запрос к RAG-системе."""
@@ -26,22 +22,6 @@ class AskRequest(BaseModel):
         le=20,
         description="Сколько документов использовать для контекста",
     )
-    category: str | None = Field(
-        default=None,
-        description="Фильтр по категории: 'main', 'news', 'people'. Оставьте пустым для поиска по всем.",
-        examples=[None],
-    )
-
-    @field_validator("category", mode="before")
-    @classmethod
-    def clean_category(cls, v):
-        """Swagger UI отправляет 'string' как плейсхолдер — превращаем в None."""
-        if v is None:
-            return None
-        v = str(v).strip()
-        if not v or v not in VALID_CATEGORIES:
-            return None
-        return v
 
 
 # ── Ответы ───────────────────────────────────────────────────────────
@@ -50,7 +30,6 @@ class SourceDocument(BaseModel):
     """Один источник, использованный для ответа."""
     title: str
     source_url: str
-    category: str
     score: float
     match_type: str  # "semantic", "bm25", "hybrid"
 

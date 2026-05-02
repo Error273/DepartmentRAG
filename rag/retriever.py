@@ -1,11 +1,12 @@
 """
-Retriever: гибридный поиск (semantic + BM25) с возвратом полных страниц.
+Retriever: гибридный поиск (semantic + BM25) с возвратом релевантных чанков.
 
 Стратегия:
   1. Semantic search — cosine similarity через Qdrant (смысловой поиск)
   2. BM25 — классический лексический поиск с TF-IDF (точные слова)
   3. Normalized Score Fusion — объединение результатов через нормализованные скоры
-  4. Small-to-big — semantic поиск по чанкам, BM25 по документам, возврат полных страниц
+  4. Chunk window expansion — для каждого найденного чанка подтягиваем ±1 соседний
+     чтобы не терять контекст на стыке чанков
 """
 
 import json
@@ -16,9 +17,9 @@ from dataclasses import dataclass
 import numpy as np
 from rank_bm25 import BM25Okapi
 from qdrant_client import QdrantClient
-from qdrant_client.models import FieldCondition, Filter, MatchValue
 
 from rag.config import (
+    CHUNKS_PATH,
     COLLECTION_NAME,
     DOC_TEXTS_PATH,
     QDRANT_HOST,
@@ -75,6 +76,18 @@ class Retriever:
             self.doc_texts: dict = json.load(f)
         print(f"Загружено {len(self.doc_texts)} полных документов")
 
+        # Загрузка чанков для window expansion (url → chunk_index → text)
+        self.chunk_lookup: dict[str, dict[int, str]] = {}
+        with open(str(CHUNKS_PATH), encoding="utf-8") as f:
+            all_chunks = json.load(f)
+        for chunk in all_chunks:
+            url = chunk["metadata"]["source_url"]
+            idx = chunk["metadata"]["chunk_index"]
+            if url not in self.chunk_lookup:
+                self.chunk_lookup[url] = {}
+            self.chunk_lookup[url][idx] = chunk["text"]
+        print(f"Загружено {len(all_chunks)} чанков для window expansion")
+
         # Строим BM25-индекс по ПОЛНЫМ документам (не чанкам).
         # Так BM25-ранг будет на уровне страниц — совпадает с гранулярностью возврата.
         self.doc_urls: list[str] = []  # URL в том же порядке что и BM25-корпус
@@ -107,22 +120,14 @@ class Retriever:
         self,
         query: str,
         top_k: int = SEMANTIC_TOP_K,
-        category: str | None = None,
     ) -> list[dict]:
-        """Семантический поиск через Qdrant."""
+        """Семантический поиск через Qdrant. Возвращает чанки с текстом."""
         query_vector = self.embedder.embed(query).tolist()
-
-        query_filter = None
-        if category:
-            query_filter = Filter(
-                must=[FieldCondition(key="category", match=MatchValue(value=category))]
-            )
 
         try:
             results = self.client.query_points(
                 collection_name=self.collection_name,
                 query=query_vector,
-                query_filter=query_filter,
                 limit=top_k,
             )
         except Exception as e:
@@ -134,6 +139,8 @@ class Retriever:
                 "source_url": p.payload.get("source_url", ""),
                 "title": p.payload.get("title", ""),
                 "category": p.payload.get("category", ""),
+                "chunk_text": p.payload.get("text", ""),
+                "chunk_index": p.payload.get("chunk_index", 0),
                 "score": p.score,
             }
             for p in results.points
@@ -143,7 +150,6 @@ class Retriever:
         self,
         query: str,
         top_k: int = SEMANTIC_TOP_K,
-        category: str | None = None,
     ) -> list[dict]:
         """BM25 лексический поиск по полным документам."""
         tokens = self._tokenize(query)
@@ -164,9 +170,6 @@ class Retriever:
             doc = self.doc_texts[url]
             cat = doc.get("category", "")
 
-            if category and cat != category:
-                continue
-
             hits.append({
                 "source_url": url,
                 "title": doc.get("title", ""),
@@ -180,7 +183,6 @@ class Retriever:
         self,
         query: str,
         top_k: int = TOP_K,
-        category: str | None = None,
         alpha: float = 0.5,
     ) -> list[RetrievedDocument]:
         """
@@ -194,15 +196,14 @@ class Retriever:
         Args:
             query: Текстовый запрос.
             top_k: Сколько уникальных страниц вернуть.
-            category: Фильтр по категории ('main', 'news', 'people').
             alpha: Вес BM25 (0..1). 0.5 = равный вес.
 
         Returns:
             Список RetrievedDocument с полными текстами страниц.
         """
         # 1. Два параллельных поиска
-        semantic_hits = self.semantic_search(query, category=category)
-        bm25_hits = self.bm25_search(query, category=category)
+        semantic_hits = self.semantic_search(query)
+        bm25_hits = self.bm25_search(query)
 
         # 2. Собираем скоры по URL (дедупликация semantic — берём лучший скор)
         semantic_scores: dict[str, float] = {}
@@ -216,6 +217,22 @@ class Retriever:
             url = hit["source_url"]
             if url:
                 bm25_scores[url] = max(bm25_scores.get(url, 0), hit["score"])
+
+        # 2b. Собираем релевантные чанки по URL из semantic-поиска
+        #     Для каждого документа сохраняем найденные чанки (отсортированные по chunk_index)
+        url_chunks: dict[str, list[dict]] = {}
+        for hit in semantic_hits:
+            url = hit["source_url"]
+            if url and "chunk_text" in hit and hit["chunk_text"]:
+                if url not in url_chunks:
+                    url_chunks[url] = []
+                # Дедупликация чанков по chunk_index
+                existing_indices = {c["chunk_index"] for c in url_chunks[url]}
+                if hit.get("chunk_index", 0) not in existing_indices:
+                    url_chunks[url].append({
+                        "chunk_text": hit["chunk_text"],
+                        "chunk_index": hit.get("chunk_index", 0),
+                    })
 
         # 3. Нормализация скоров в [0, 1]
         #    Semantic: уже cosine similarity в [0, 1] — используем как есть
@@ -272,19 +289,38 @@ class Retriever:
         # 6. Сортируем по гибридному скору
         hybrid_results.sort(key=lambda x: x["hybrid_score"], reverse=True)
 
-        # 7. Берём top_k и формируем результаты с полными текстами
+        # 7. Берём top_k и формируем результаты с релевантными чанками + window expansion
         results = []
         for item in hybrid_results[:top_k]:
             url = item["url"]
-            doc = self._get_full_doc(url)
-            full_text = doc["text"] if doc else "(полный текст недоступен)"
+
+            # Собираем текст из релевантных чанков с расширением окна ±1
+            if url in url_chunks and url_chunks[url]:
+                # Индексы найденных чанков
+                found_indices = {c["chunk_index"] for c in url_chunks[url]}
+
+                # Расширяем окно: для каждого найденного чанка добавляем ±1 сосед
+                expanded_indices = set()
+                for idx in found_indices:
+                    expanded_indices.add(idx - 1)
+                    expanded_indices.add(idx)
+                    expanded_indices.add(idx + 1)
+
+                # Собираем текст из chunk_lookup (все чанки этого документа)
+                doc_chunks = self.chunk_lookup.get(url, {})
+                final_indices = sorted(idx for idx in expanded_indices if idx in doc_chunks)
+                context_text = "\n\n".join(doc_chunks[idx] for idx in final_indices)
+            else:
+                # Fallback: BM25-only документ — берём полный текст
+                doc = self._get_full_doc(url)
+                context_text = doc["text"] if doc else "(текст недоступен)"
 
             results.append(
                 RetrievedDocument(
                     source_url=url,
                     title=item.get("title", ""),
                     category=item.get("category", ""),
-                    full_text=full_text,
+                    full_text=context_text,
                     score=item["hybrid_score"],
                     bm25_norm=item["bm25_norm"],
                     sem_norm=item["sem_norm"],

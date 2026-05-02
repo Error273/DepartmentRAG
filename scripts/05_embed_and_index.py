@@ -6,7 +6,7 @@
 3. Создаёт текстовый индекс в Qdrant для keyword-поиска
 
 Запуск:
-    python scripts/04_embed_and_index.py
+    python scripts/05_embed_and_index.py
 """
 
 import json

@@ -4,7 +4,7 @@
 совместимом с остальным пайплайном (url, title, content).
 
 Запуск:
-    python scripts/05_parse_docs.py
+    python scripts/02_parse_docs.py
 """
 
 import json

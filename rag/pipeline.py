@@ -1,26 +1,42 @@
 """
-Pipeline: собирает всё вместе — query → retrieve → llm → answer.
+Pipeline: обратно-совместимая обёртка над RAG-агентом.
 
-Это основная точка входа для RAG-системы.
+Сохраняет тот же интерфейс (ask/ask_stream), но делегирует
+всю работу в RAGAgent (LangGraph ReAct).
+
+Включает Guardrail — проверку входящих сообщений
+перед вызовом основного агента.
 """
 
 from dataclasses import dataclass
 
-from rag.retriever import Retriever, RetrievedDocument
-from rag.llm import LLM
+from rag.agent import RAGAgent, AgentResponse, ToolCallLog
+from rag.guardrail import Guardrail
+from rag.retriever import RetrievedDocument
+from rag.config import GUARDRAIL_BLOCK_MESSAGE
 
 
 @dataclass
 class RAGResponse:
-    """Полный ответ RAG-системы."""
+    """Полный ответ RAG-системы (обратная совместимость)."""
     answer: str                          # Ответ LLM
     sources: list[RetrievedDocument]     # Найденные документы
     query: str                           # Исходный вопрос
+    tool_logs: list[ToolCallLog] = None  # Логи вызовов инструментов
+    elapsed_seconds: float = 0.0         # Время ответа в секундах
+    total_tokens: int = 0                # Общее количество токенов
+    blocked: bool = False                # Заблокировано guardrail-ом
 
 
 class RAGPipeline:
     """
-    Полный RAG-пайплайн: поиск - формирование контекста - генерация ответа.
+    Полный RAG-пайплайн через LangGraph-агента.
+
+    Обратно-совместимая обёртка: тот же интерфейс .ask(),
+    но внутри LLM сама решает когда и что искать.
+
+    Включает Guardrail: перед вызовом агента быстрая модель
+    проверяет, допустимо ли обрабатывать запрос.
 
     Использование:
         pipeline = RAGPipeline()
@@ -30,77 +46,53 @@ class RAGPipeline:
             print(f"  - {src.title}: {src.source_url}")
     """
 
-    def __init__(
-        self,
-        retriever: Retriever | None = None,
-        llm: LLM | None = None,
-    ):
-        print("Инициализация RAG Pipeline...")
-        self.retriever = retriever or Retriever()
-        self.llm = llm or LLM()
+    def __init__(self):
+        print("Инициализация RAG Pipeline (агентный режим)...")
+        self.guardrail = Guardrail()
+        self.agent = RAGAgent()
         print("RAG Pipeline готов к работе!")
 
     def ask(
         self,
         question: str,
         top_k: int = 5,
-        category: str | None = None,
+        history: list[dict] | None = None,
     ) -> RAGResponse:
         """
-        Полный цикл RAG: поиск → контекст → LLM → ответ.
+        Полный цикл RAG через агента с guardrail-проверкой.
 
         Args:
             question: Вопрос пользователя.
-            top_k: Сколько документов искать.
-            category: Фильтр по категории (опционально).
+            top_k: Не используется напрямую (агент сам управляет поиском).
+            history: История диалога [{"role": ..., "content": ...}].
 
         Returns:
             RAGResponse с ответом, источниками и исходным запросом.
         """
-        # 1. Поиск релевантных документов
-        docs = self.retriever.search(query=question, top_k=top_k, category=category)
+        # 1. Guardrail: проверяем допустимость запроса
+        guard_result = self.guardrail.check(question, history)
+        if not guard_result.allowed:
+            print(f"[Guardrail] Заблокировано: {question!r} → {guard_result.reason}")
+            return RAGResponse(
+                answer=GUARDRAIL_BLOCK_MESSAGE,
+                sources=[],
+                query=question,
+                tool_logs=[],
+                blocked=True,
+            )
 
-        # 2. Формируем контекст из найденных документов
-        context = self.retriever.format_context(docs)
-
-        # 3. Генерируем ответ через LLM
-        answer = self.llm.ask(question=question, context=context)
-
-        return RAGResponse(
-            answer=answer,
-            sources=docs,
-            query=question,
+        # 2. Основной RAG-агент
+        agent_response: AgentResponse = self.agent.ask(
+            question=question,
+            history=history,
         )
 
-    def ask_stream(
-        self,
-        question: str,
-        top_k: int = 5,
-        category: str | None = None,
-    ):
-        """
-        Стриминговый вариант — отдаёт токены по мере генерации.
-        Сначала ищет документы, потом стримит ответ.
-
-        Args:
-            question: Вопрос пользователя.
-            top_k: Сколько документов искать.
-            category: Фильтр по категории.
-
-        Yields:
-            Кортежи (token: str, sources: list | None).
-            sources передаётся только в первом yield, потом None.
-        """
-        # 1. Поиск
-        docs = self.retriever.search(query=question, top_k=top_k, category=category)
-
-        # 2. Контекст
-        context = self.retriever.format_context(docs)
-
-        # 3. Стриминг ответа
-        first = True
-        for token in self.llm.ask_stream(question=question, context=context):
-            if first:
-                yield token, docs
-                first = True
-            yield token, None
+        return RAGResponse(
+            answer=agent_response.answer,
+            sources=agent_response.sources,
+            query=agent_response.query,
+            tool_logs=agent_response.tool_logs,
+            elapsed_seconds=agent_response.elapsed_seconds,
+            total_tokens=agent_response.total_tokens,
+            blocked=False,
+        )

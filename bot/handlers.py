@@ -109,6 +109,48 @@ def format_sources(sources) -> str:
     return "\n".join(lines)
 
 
+def format_tool_logs(tool_logs, elapsed_seconds: float = 0.0, total_tokens: int = 0) -> str:
+    """Форматирует логи вызовов инструментов в читаемый текст."""
+    if not tool_logs:
+        return ""
+
+    lines = ["🔧 <b>Логи работы агента:</b>\n"]
+
+    # Метрики производительности
+    metrics = []
+    if elapsed_seconds > 0:
+        metrics.append(f"⏱ Время: <code>{elapsed_seconds:.1f}с</code>")
+    if total_tokens > 0:
+        metrics.append(f"🔤 Токены: <code>{total_tokens}</code>")
+    if metrics:
+        lines.append(" | ".join(metrics))
+        lines.append("")
+
+    for i, log in enumerate(tool_logs, 1):
+        lines.append(f"<b>Шаг {i}:</b> 🛠 <code>{log.tool_name}</code>")
+
+        # Аргументы
+        args_parts = []
+        for key, value in log.arguments.items():
+            args_parts.append(f"  • <i>{key}</i>: <code>{value}</code>")
+        if args_parts:
+            lines.append("\n".join(args_parts))
+
+        # Результат (превью)
+        if log.result:
+            # Обрезаем для читаемости в Telegram
+            result_preview = log.result[:300]
+            if len(log.result) > 300:
+                result_preview += "..."
+            lines.append(f"  ➡️ Результат: <pre>{result_preview}</pre>")
+        else:
+            lines.append(f"  ➡️ Результат: <i>нет данных</i>")
+
+        lines.append("")  # пустая строка между шагами
+
+    return "\n".join(lines)
+
+
 # ── /start ───────────────────────────────────────────────────────────
 
 START_TEXT = (
@@ -195,43 +237,36 @@ async def handle_question(message: Message):
     try:
         pipeline = get_pipeline()
 
-        # 1. Поиск документов (синхронный → executor)
-        docs = await asyncio.get_event_loop().run_in_executor(
-            None,
-            lambda: pipeline.retriever.search(query=question, top_k=5),
-        )
-
-        if not docs:
-            await status_msg.edit_text(
-                "😔 К сожалению, я не нашёл релевантной информации "
-                "по вашему вопросу.\n\n"
-                "Попробуйте переформулировать вопрос или задать другой."
-            )
-            return
-
-        # 2. Формируем контекст
-        context_text = pipeline.retriever.format_context(docs)
-
-        # 3. Получаем историю диалога для этого чата
+        # Получаем историю диалога для этого чата
         history = list(_chat_history[chat_id])
 
-        # 4. Генерируем ответ LLM с историей (синхронный → executor)
-        await status_msg.edit_text("💬 Генерирую ответ...")
+        # RAG-агент: сам решает что и как искать
+        await status_msg.edit_text("🤖 Анализирую вопрос и ищу информацию...")
 
-        answer = await asyncio.get_event_loop().run_in_executor(
+        response = await asyncio.get_event_loop().run_in_executor(
             None,
-            lambda: pipeline.llm.ask(
+            lambda: pipeline.ask(
                 question=question,
-                context=context_text,
                 history=history,
             ),
         )
 
-        # 5. Сохраняем в память диалога
+        answer = response.answer
+        docs = response.sources
+
+        # Если запрос заблокирован guardrail-ом — отправляем отказ
+        if response.blocked:
+            await status_msg.edit_text(
+                f"🛡️ {answer}",
+                parse_mode=ParseMode.HTML,
+            )
+            return
+
+        # Сохраняем в память диалога (только разрешённые сообщения)
         _chat_history[chat_id].append({"role": "user", "content": question})
         _chat_history[chat_id].append({"role": "assistant", "content": answer})
 
-        # 6. Формируем финальное сообщение (MD → HTML)
+        # Формируем финальное сообщение (MD → HTML)
         sources_text = format_sources(docs)
         final_text = md_to_html(answer) + sources_text
 
@@ -253,6 +288,36 @@ async def handle_question(message: Message):
                 answer + plain_sources,
                 disable_web_page_preview=True,
             )
+
+        # Отправляем логи инструментов отдельным сообщением
+        tool_logs = getattr(response, 'tool_logs', None)
+        if tool_logs:
+            logs_text = format_tool_logs(
+                tool_logs,
+                elapsed_seconds=getattr(response, 'elapsed_seconds', 0.0),
+                total_tokens=getattr(response, 'total_tokens', 0),
+            )
+            if logs_text:
+                try:
+                    await message.answer(
+                        logs_text,
+                        parse_mode=ParseMode.HTML,
+                        disable_web_page_preview=True,
+                    )
+                except Exception:
+                    # Фоллбэк без HTML
+                    plain_logs = "🔧 Логи работы агента:\n\n"
+                    for j, lg in enumerate(tool_logs, 1):
+                        plain_logs += f"Шаг {j}: {lg.tool_name}\n"
+                        for k, v in lg.arguments.items():
+                            plain_logs += f"  {k}: {v}\n"
+                        if lg.result:
+                            plain_logs += f"  Результат: {lg.result[:200]}\n"
+                        plain_logs += "\n"
+                    await message.answer(
+                        plain_logs,
+                        disable_web_page_preview=True,
+                    )
 
     except Exception as e:
         traceback.print_exc()
