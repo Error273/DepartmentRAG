@@ -37,7 +37,7 @@ from rag.retriever import Retriever, RetrievedDocument
 _retriever: Retriever | None = None
 
 
-def _get_retriever() -> Retriever:
+def get_retriever() -> Retriever:
     """Lazy-init ретривера (тяжёлая операция: загрузка моделей + BM25)."""
     global _retriever
     if _retriever is None:
@@ -63,7 +63,7 @@ def search_documents(query: str) -> str:
     Args:
         query: Поисковый запрос. Ключевые слова и имена собственные дают лучшие результаты.
     """
-    retriever = _get_retriever()
+    retriever = get_retriever()
     docs = retriever.search(query=query, top_k=3)
 
     if not docs:
@@ -129,7 +129,7 @@ class RAGAgent:
         print("🤖 Инициализация RAG Agent...")
 
         # Инициализируем ретривер (если ещё не инициализирован)
-        _get_retriever()
+        get_retriever()
 
         # LLM через Yandex AI Studio (OpenAI-совместимый API)
         self.llm = ChatOpenAI(
@@ -208,7 +208,7 @@ class RAGAgent:
 
             # LangGraph может вставить английское сообщение при достижении recursion_limit
             # вместо исключения GraphRecursionError
-            if not answer or "need more steps" in answer.lower() or "sorry" in answer.lower():
+            if not answer or "need more steps" in answer.lower():
                 answer = (
                     "К сожалению, не удалось сформировать ответ. "
                     "Попробуйте переформулировать вопрос."
@@ -301,6 +301,6 @@ class RAGAgent:
         if not search_queries:
             return []
 
-        retriever = _get_retriever()
+        retriever = get_retriever()
         last_query = search_queries[-1]
         return retriever.search(query=last_query, top_k=3)

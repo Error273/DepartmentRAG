@@ -96,3 +96,25 @@ class RAGPipeline:
             total_tokens=agent_response.total_tokens,
             blocked=False,
         )
+
+    def check_qdrant(self) -> bool:
+        """Проверяет подключение к Qdrant."""
+        try:
+            from rag.agent import get_retriever
+            get_retriever().client.get_collections()
+            return True
+        except Exception:
+            return False
+
+
+# ── Singleton ────────────────────────────────────────────────────────
+
+_pipeline: RAGPipeline | None = None
+
+
+def get_pipeline() -> RAGPipeline:
+    """Lazy-инициализация RAG Pipeline (singleton)."""
+    global _pipeline
+    if _pipeline is None:
+        _pipeline = RAGPipeline()
+    return _pipeline
