@@ -81,39 +81,8 @@ def parse_doc(filepath: Path) -> str:
     except Exception as e:
         print(f"  [WARN] Word COM не удался: {e}")
 
-    # Стратегия 2: конвертация в .docx через LibreOffice
-    try:
-        import subprocess
-        import tempfile
-        import shutil
-
-        lo_paths = [
-            r"C:\Program Files\LibreOffice\program\soffice.exe",
-            r"C:\Program Files (x86)\LibreOffice\program\soffice.exe",
-            "soffice",
-        ]
-        soffice = None
-        for p in lo_paths:
-            if os.path.isfile(p) or shutil.which(p):
-                soffice = p
-                break
-
-        if soffice:
-            with tempfile.TemporaryDirectory() as tmpdir:
-                subprocess.run(
-                    [soffice, "--headless", "--convert-to", "docx",
-                     "--outdir", tmpdir, str(filepath)],
-                    capture_output=True, timeout=60,
-                )
-                converted = Path(tmpdir) / (filepath.stem + ".docx")
-                if converted.exists():
-                    print("  [OK] Извлечено через LibreOffice")
-                    return parse_docx(converted)
-    except Exception as e:
-        print(f"  [WARN] LibreOffice конвертация не удалась: {e}")
-
     print(f"  [ERROR] Не удалось извлечь текст из .doc: {filepath.name}")
-    print("         Установите Microsoft Word или LibreOffice")
+    print("         Установите Microsoft Word и pywin32 (pip install pywin32)")
     return ""
 
 

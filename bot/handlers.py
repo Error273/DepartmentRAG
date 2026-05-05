@@ -15,7 +15,7 @@ from aiogram.types import Message
 from aiogram.filters import CommandStart, Command
 from aiogram.enums import ParseMode
 
-from rag.pipeline import RAGPipeline
+from rag.pipeline import get_pipeline
 
 
 router = Router()
@@ -33,19 +33,7 @@ _chat_history: dict[int, deque] = defaultdict(
 )
 
 
-# ── Pipeline (lazy-init) ────────────────────────────────────────────
 
-_pipeline: RAGPipeline | None = None
-
-
-def get_pipeline() -> RAGPipeline:
-    """Lazy-инициализация RAG Pipeline."""
-    global _pipeline
-    if _pipeline is None:
-        print("🔄 Инициализация RAG Pipeline для бота...")
-        _pipeline = RAGPipeline()
-        print("✅ RAG Pipeline готов!")
-    return _pipeline
 
 
 # ── Утилиты ──────────────────────────────────────────────────────────

@@ -2,7 +2,7 @@
 Эндпоинты FastAPI сервиса.
 
 /ask          — основной эндпоинт: вопрос → ответ + источники
-/ask/stream   — SSE-стриминг: токены приходят по мере генерации
+/ask/stream   — SSE: источники + ответ через Server-Sent Events
 /health       — проверка здоровья сервиса
 """
 
@@ -12,7 +12,7 @@ import traceback
 from fastapi import APIRouter, HTTPException
 from fastapi.responses import StreamingResponse
 
-from rag.pipeline import RAGPipeline
+from rag.pipeline import get_pipeline
 from rag.config import LLM_MODEL
 from service.schemas import (
     AskRequest,
@@ -22,18 +22,6 @@ from service.schemas import (
 )
 
 router = APIRouter()
-
-# Pipeline инициализируется один раз при первом импорте роутов
-# (загрузка моделей, подключение к Qdrant)
-_pipeline: RAGPipeline | None = None
-
-
-def get_pipeline() -> RAGPipeline:
-    global _pipeline
-    if _pipeline is None:
-        _pipeline = RAGPipeline()
-    return _pipeline
-
 
 
 @router.post(
@@ -71,26 +59,20 @@ async def ask(request: AskRequest):
         raise HTTPException(status_code=500, detail=f"Ошибка генерации ответа: {e}")
 
 
-
 @router.post(
     "/ask/stream",
     summary="Стриминговый ответ (SSE)",
-    description="Токены ответа приходят по мере генерации через Server-Sent Events.",
+    description="Источники и ответ приходят через Server-Sent Events.",
 )
 async def ask_stream(request: AskRequest):
-    """SSE-стриминг: сначала отправляет источники, потом токены ответа."""
+    """SSE: запускает агента, отправляет источники и ответ как SSE-события."""
 
     def event_generator():
         try:
             pipeline = get_pipeline()
+            response = pipeline.ask(question=request.question)
 
-            # 1. Поиск документов
-            docs = pipeline.retriever.search(
-                query=request.question,
-                top_k=request.top_k,
-            )
-
-            # 2. Отправляем источники первым SSE-событием
+            # 1. Отправляем источники
             sources_data = [
                 {
                     "title": doc.title,
@@ -98,21 +80,15 @@ async def ask_stream(request: AskRequest):
                     "score": round(doc.score, 4),
                     "match_type": doc.match_type,
                 }
-                for doc in docs
+                for doc in response.sources
             ]
             yield f"event: sources\ndata: {json.dumps(sources_data, ensure_ascii=False)}\n\n"
 
-            # 3. Формируем контекст и стримим ответ
-            context = pipeline.retriever.format_context(docs)
-            for token in pipeline.llm.ask_stream(
-                question=request.question,
-                context=context,
-            ):
-                # Экранируем переносы строк для SSE
-                escaped = token.replace("\n", "\\n")
-                yield f"event: token\ndata: {escaped}\n\n"
+            # 2. Отправляем ответ
+            escaped = response.answer.replace("\n", "\\n")
+            yield f"event: token\ndata: {escaped}\n\n"
 
-            # 4. Сигнал завершения
+            # 3. Сигнал завершения
             yield "event: done\ndata: [DONE]\n\n"
 
         except Exception as e:
@@ -140,14 +116,8 @@ async def ask_stream(request: AskRequest):
 )
 async def health():
     """Проверяет, что сервис и Qdrant работают."""
-    qdrant_ok = False
-    try:
-        pipeline = get_pipeline()
-        # Простая проверка подключения к Qdrant
-        pipeline.retriever.client.get_collections()
-        qdrant_ok = True
-    except Exception:
-        pass
+    pipeline = get_pipeline()
+    qdrant_ok = pipeline.check_qdrant()
 
     return HealthResponse(
         status="ok" if qdrant_ok else "degraded",
